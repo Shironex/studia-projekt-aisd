@@ -11,6 +11,7 @@
 #include <sstream>
 #include <cstdlib>
 #include <iomanip>
+#include <utility>
 
 using namespace std;
 
@@ -152,6 +153,32 @@ string fmtZnak(char c) {
     return string(1, c);            // zwykly znak
 }
 
+// Konwertuje string bitow na znaki (8 bitow = 1 znak)
+// Zwraca pare: (zakodowane znaki, liczba bitow paddingu)
+pair<string, int> bityNaZnaki(const string& bity) {
+    string wynik = "";
+    int padding = 0;
+
+    // Oblicz ile bitow paddingu potrzeba (dopelnienie do 8)
+    if (bity.size() % 8 != 0) {
+        padding = 8 - (bity.size() % 8);
+    }
+
+    // Dodaj padding na koncu (zera)
+    string bityPad = bity + string(padding, '0');
+
+    // Konwertuj co 8 bitow na znak
+    for (size_t i = 0; i < bityPad.size(); i += 8) {
+        unsigned char bajt = 0;
+        for (int j = 0; j < 8; j++) {
+            bajt = (bajt << 1) | (bityPad[i + j] - '0');
+        }
+        wynik += (char)bajt;
+    }
+
+    return make_pair(wynik, padding);
+}
+
 // KOMPRESJA: plik tekstowy -> plik .huff
 void kompresuj(string wej, string wyj) {
     // 1. Otworz plik
@@ -181,22 +208,57 @@ void kompresuj(string wej, string wyj) {
              << "  |  " << setw(16) << left << kody[it->first] << "|\n";
     cout << "  '------------------------------------------'\n";
 
-    // 5. Zapisz do pliku: slownik (linia 1) + zakodowane bity (linia 2)
-    ofstream o(wyj.c_str());
+    // 5. Wygeneruj ciag bitow
+    string bity = "";
+    for (size_t i = 0; i < txt.size(); i++) bity += kody[txt[i]];
+
+    // 6. Konwertuj bity na znaki (8 bitow = 1 bajt)
+    pair<string, int> zakodowane = bityNaZnaki(bity);
+    string znakiWyj = zakodowane.first;
+    int padding = zakodowane.second;
+
+    // 7. Zapisz do pliku binarnego
+    // Format: slownik\npadding\nzakodowane_bajty
+    ofstream o(wyj.c_str(), ios::binary);
     for (map<char,int>::iterator it = freq.begin(); it != freq.end(); ++it)
         o << (int)it->first << ":" << it->second << ";";  // format: ASCII:ile;
-    o << "\n";
-    for (size_t i = 0; i < txt.size(); i++) o << kody[txt[i]];  // zakodowany tekst
+    o << "\n" << padding << "\n";  // liczba bitow paddingu
+    o.write(znakiWyj.c_str(), znakiWyj.size());  // bajty binarne
     o.close();
+
+    // 8. Pokaz statystyki
+    cout << "\n  Oryginalny rozmiar:  " << txt.size() << " bajtow\n";
+    cout << "  Skompresowany:       " << znakiWyj.size() << " bajtow (+ naglowek)\n";
+    cout << "  Padding:             " << padding << " bitow\n";
 
     usunDrzewo(root);
     cout << "\n  [OK] Zapisano: " << wyj << endl;
 }
 
+// Konwertuje znaki na string bitow (1 znak = 8 bitow)
+string znakiNaBity(const string& znaki, int padding) {
+    string bity = "";
+
+    // Konwertuj kazdy znak na 8 bitow
+    for (size_t i = 0; i < znaki.size(); i++) {
+        unsigned char bajt = (unsigned char)znaki[i];
+        for (int j = 7; j >= 0; j--) {
+            bity += ((bajt >> j) & 1) ? '1' : '0';
+        }
+    }
+
+    // Usun bity paddingu z konca
+    if (padding > 0 && bity.size() >= (size_t)padding) {
+        bity = bity.substr(0, bity.size() - padding);
+    }
+
+    return bity;
+}
+
 // DEKOMPRESJA: plik .huff -> plik tekstowy
 void dekompresuj(string wej, string wyj) {
-    // 1. Otworz plik
-    ifstream f(wej.c_str());
+    // 1. Otworz plik binarnie
+    ifstream f(wej.c_str(), ios::binary);
     if (!f) { cout << "\n  [!] Nie mozna otworzyc: " << wej << endl; return; }
 
     // 2. Wczytaj slownik z pierwszej linii
@@ -211,15 +273,26 @@ void dekompresuj(string wej, string wyj) {
             freq[(char)atoi(seg.substr(0,p).c_str())] = atoi(seg.substr(p+1).c_str());
     }
 
-    // 3. Wczytaj zakodowane bity
-    string bity;
-    f >> bity;
+    // 3. Wczytaj liczbe bitow paddingu
+    string padStr;
+    getline(f, padStr);
+    int padding = atoi(padStr.c_str());
+
+    // 4. Wczytaj reszta pliku jako bajty binarne
+    string zakodowane = "";
+    char c;
+    while (f.get(c)) {
+        zakodowane += c;
+    }
     f.close();
 
-    // 4. Odbuduj drzewo (identyczne jak przy kompresji)
+    // 5. Konwertuj bajty na bity
+    string bity = znakiNaBity(zakodowane, padding);
+
+    // 6. Odbuduj drzewo (identyczne jak przy kompresji)
     Wezel* root = budujDrzewo(freq);
 
-    // 5. Dekoduj: idz po drzewie zgodnie z bitami
+    // 7. Dekoduj: idz po drzewie zgodnie z bitami
     ofstream o(wyj.c_str());
     Wezel* w = root;
     for (size_t i = 0; i < bity.size() && w; i++) {
